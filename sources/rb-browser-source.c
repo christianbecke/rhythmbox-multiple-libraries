@@ -127,6 +127,7 @@ struct RBBrowserSourcePrivate
 	RBEntryView *songs;
 	GtkWidget *paned;
 
+	GPtrArray *base_query;
 	RhythmDBQueryModel *cached_all_query;
 	RhythmDBQuery *search_query;
 	RhythmDBPropType search_prop;
@@ -180,7 +181,8 @@ enum
 	PROP_SORTING_KEY,
 	PROP_BASE_QUERY_MODEL,
 	PROP_POPULATE,
-	PROP_SEARCH_TYPE
+	PROP_SEARCH_TYPE,
+	PROP_QUERY
 };
 
 G_DEFINE_ABSTRACT_TYPE (RBBrowserSource, rb_browser_source, RB_TYPE_SOURCE)
@@ -243,6 +245,13 @@ rb_browser_source_class_init (RBBrowserSourceClass *klass)
 					  PROP_SEARCH_TYPE,
 					  "search-type");
 
+	g_object_class_install_property (object_class,
+					 PROP_QUERY,
+					 g_param_spec_pointer ("query",
+							      "Query",
+							      "RhythmDBQuery",
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+
 	g_type_class_add_private (klass, sizeof (RBBrowserSourcePrivate));
 }
 
@@ -273,6 +282,11 @@ rb_browser_source_dispose (GObject *object)
 	if (source->priv->search_query != NULL) {
 		rhythmdb_query_free (source->priv->search_query);
 		source->priv->search_query = NULL;
+	}
+
+	if (source->priv->base_query != NULL) {
+		rhythmdb_query_free (source->priv->base_query);
+		source->priv->base_query = NULL;
 	}
 
 	if (source->priv->cached_all_query != NULL) {
@@ -507,6 +521,12 @@ rb_browser_source_set_property (GObject *object,
 	case PROP_SEARCH_TYPE:
 		/* ignored */
 		break;
+	case PROP_QUERY:
+		if (source->priv->base_query != NULL) {
+			rhythmdb_query_free (source->priv->base_query);
+		}
+		source->priv->base_query = rhythmdb_query_copy (g_value_get_pointer (value));
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -533,6 +553,9 @@ rb_browser_source_get_property (GObject *object,
 		break;
 	case PROP_SEARCH_TYPE:
 		g_value_set_enum (value, RB_SOURCE_SEARCH_INCREMENTAL);
+		break;
+	case PROP_QUERY:
+		g_value_set_pointer (value, source->priv->base_query);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -565,11 +588,17 @@ rb_browser_source_populate (RBBrowserSource *source)
 				 source, 0);
 
 	g_object_get (source, "entry-type", &entry_type, NULL);
-	rhythmdb_do_full_query_async (source->priv->db,
-				      RHYTHMDB_QUERY_RESULTS (source->priv->cached_all_query),
-				      RHYTHMDB_QUERY_PROP_EQUALS, RHYTHMDB_PROP_TYPE, entry_type,
-				      RHYTHMDB_QUERY_END);
+	if (source->priv->base_query == NULL) {
+		rb_debug ("No query set, creating new one.");
+		source->priv->base_query = rhythmdb_query_parse (source->priv->db,
+				RHYTHMDB_QUERY_PROP_EQUALS, RHYTHMDB_PROP_TYPE, entry_type,
+				RHYTHMDB_QUERY_END);
+	}
 	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+
+	rhythmdb_do_full_query_async_parsed (source->priv->db,
+				      RHYTHMDB_QUERY_RESULTS (source->priv->cached_all_query),
+				      source->priv->base_query);
 }
 
 static void
@@ -882,8 +911,8 @@ static void
 rb_browser_source_do_query (RBBrowserSource *source, gboolean subset)
 {
 	RhythmDBQueryModel *query_model;
+	GPtrArray *base_query;
 	GPtrArray *query;
-	RhythmDBEntryType entry_type;
 
 	/* use the cached 'all' query to optimise the no-search case */
 	if (source->priv->search_query == NULL) {
@@ -893,15 +922,13 @@ rb_browser_source_do_query (RBBrowserSource *source, gboolean subset)
 		return;
 	}
 
-	g_object_get (source, "entry-type", &entry_type, NULL);
-	query = rhythmdb_query_parse (source->priv->db,
-				      RHYTHMDB_QUERY_PROP_EQUALS,
-				      RHYTHMDB_PROP_TYPE,
-				      entry_type,
-				      RHYTHMDB_QUERY_SUBQUERY,
-				      source->priv->search_query,
-				      RHYTHMDB_QUERY_END);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_get (source->priv->cached_all_query, "query", &base_query, NULL);
+	query = rhythmdb_query_copy (base_query);
+	rhythmdb_query_append (source->priv->db,
+				query,
+				RHYTHMDB_QUERY_SUBQUERY,
+				source->priv->search_query,
+				RHYTHMDB_QUERY_END);
 
 	if (subset) {
 		/* if we're appending text to an existing search string, the results will be a subset
