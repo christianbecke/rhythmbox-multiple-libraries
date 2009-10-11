@@ -71,6 +71,7 @@ guint        eel_gconf_notification_add    (const char *key,
 void         eel_gconf_notification_remove (guint notification_id);
 
 void	     eel_gconf_unset 		   (const char *key);
+void	eel_gconf_recursive_unset	(const char *key);
 
 #ifdef __cplusplus
 }

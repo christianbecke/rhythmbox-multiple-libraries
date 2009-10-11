@@ -347,6 +347,26 @@ eel_gconf_unset (const char *key)
         eel_gconf_handle_error (&error);
 }
 
+/* This code wasn't part of the original eel-gconf-extensions.c */
+void
+eel_gconf_recursive_unset (const char *key)
+{
+	GConfClient *client;
+	GError *error = NULL;
+
+	g_return_if_fail (key != NULL);
+
+	client = eel_gconf_client_get_global ();
+	g_return_if_fail (client != NULL);
+
+	gconf_client_recursive_unset (client,
+			key,
+			GCONF_UNSET_INCLUDING_SCHEMA_NAMES,
+			&error);
+	eel_gconf_handle_error (&error);
+}
+/* End of added code */
+
 gboolean
 eel_gconf_monitor_add (const char *directory)
 {

@@ -66,7 +66,9 @@ gchar** rb_string_split_words (const gchar *string);
 
 gboolean rb_string_list_equal (GList *a, GList *b);
 gboolean rb_string_list_contains (GList *list, const char *s);
+gboolean rb_string_slist_contains (GSList *list, const char *s);
 GList* rb_string_list_copy (GList *list);
+GSList* rb_string_slist_copy (GSList *list);
 
 void rb_list_deep_free (GList *list);
 void rb_list_destroy_free (GList *list, GDestroyNotify destroyer);

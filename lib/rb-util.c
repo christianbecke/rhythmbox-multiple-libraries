@@ -841,6 +841,35 @@ rb_string_list_copy (GList *list)
 	return copy;
 }
 
+static void
+slist_copy_cb (const char *s, GSList **list)
+{
+	*list = g_slist_prepend (*list, g_strdup (s));
+}
+
+/**
+ * rb_string_slist_copy:
+ * @list: list of strings to copy
+ *
+ * Creates a deep copy of @list.
+ *
+ * Return value: copied list, must be freed (and its contents freed)
+ *  by caller
+ */
+GSList *
+rb_string_slist_copy (GSList *list)
+{
+	GSList *copy = NULL;
+
+	if (list == NULL)
+		return NULL;
+
+	g_slist_foreach (list, (GFunc)slist_copy_cb, &copy);
+	copy = g_slist_reverse (copy);
+
+	return copy;
+}
+
 /**
  * rb_string_list_contains:
  * @list: list to check
@@ -856,6 +885,28 @@ rb_string_list_contains (GList *list, const char *s)
 	GList *l;
 
 	for (l = list; l != NULL; l = g_list_next (l)) {
+		if (strcmp ((const char *)l->data, s) == 0)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/**
+ * rb_string_slist_contains:
+ * @list: list to check
+ * @s: string to check for
+ *
+ * Checks if @list contains the string @s.
+ *
+ * Return value: %TRUE if found
+ */
+gboolean
+rb_string_slist_contains (GSList *list, const char *s)
+{
+	GSList *l;
+
+	for (l = list; l != NULL; l = g_slist_next (l)) {
 		if (strcmp ((const char *)l->data, s) == 0)
 			return TRUE;
 	}
