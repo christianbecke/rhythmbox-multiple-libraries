@@ -31,12 +31,17 @@
 #include <string.h>
 
 #include <gconf/gconf.h>
+#include <glib/gi18n.h>
 
 #include "rhythmdb.h"
 #include "rb-debug.h"
+#include "rb-dialog.h"
+#include "rb-file-helpers.h"
+#include "rb-util.h"
 #include "eel-gconf-extensions.h"
 #include "rb-preferences.h"
 #include "rb-library-file-helpers.h"
+#include "rb-removable-media-manager.h"
 #include "rb-browser-source.h"
 #include "rb-library-child-source.h"
 
@@ -60,6 +65,9 @@ static gboolean delete_entry (GtkTreeModel *model,
 /* RBSource implementations */
 static char *impl_get_browser_key (RBSource *source);
 static char *impl_get_paned_key (RBBrowserSource *source);
+static gboolean impl_receive_drag (RBSource *source, GtkSelectionData *data);
+static gboolean impl_can_paste (RBSource *asource);
+static void impl_paste (RBSource *source, GList *entries);
 
 #define CONF_STATE_LIBRARY_DIR CONF_PREFIX "/state/library" /* Move this one to rb-preferences.h? */
 #define CONF_STATE_LIBRARY_CHILD_SORTING "/sorting"
@@ -95,8 +103,13 @@ rb_library_child_source_class_init (RBLibraryChildSourceClass *klass)
 	object_class->set_property = rb_library_child_source_set_property;
 
 	source_class->impl_get_browser_key = impl_get_browser_key;
+	source_class->impl_receive_drag = impl_receive_drag;
+	source_class->impl_can_copy = (RBSourceFeatureFunc) rb_true_function;
+	source_class->impl_can_paste = (RBSourceFeatureFunc) impl_can_paste;
+	source_class->impl_paste = impl_paste;
 
 	browser_source_class->impl_get_paned_key = impl_get_paned_key;
+	browser_source_class->impl_has_drop_support = (RBBrowserSourceFeatureFunc) rb_true_function;
 
 	g_object_class_install_property (object_class,
 					PROP_URI,
@@ -309,6 +322,175 @@ impl_get_paned_key (RBBrowserSource *source)
 	priv = RB_LIBRARY_CHILD_SOURCE_GET_PRIVATE (RB_LIBRARY_CHILD_SOURCE (source));
 
 	return g_strdup (priv->paned_key);
+}
+
+static gboolean
+impl_receive_drag (RBSource *asource, GtkSelectionData *data)
+{
+	RBLibraryChildSource *source = RB_LIBRARY_CHILD_SOURCE (asource);
+	GList *list, *i;
+	GList *entries = NULL;
+	gboolean is_id;
+	RBShell *shell;
+	RhythmDB *db;
+
+	rb_debug ("parsing uri list");
+	list = rb_uri_list_parse ((const char *) gtk_selection_data_get_data (data));
+	is_id = (gtk_selection_data_get_data_type (data) == gdk_atom_intern ("application/x-rhythmbox-entry", TRUE));
+
+	g_object_get (source, "shell", &shell, NULL);
+	g_object_get (shell, "db", &db, NULL);
+	g_object_unref (shell);
+
+	for (i = list; i != NULL; i = g_list_next (i)) {
+		if (i->data != NULL) {
+			char *uri = i->data;
+			RhythmDBEntry *entry;
+
+			entry = rhythmdb_entry_lookup_from_string (db, uri, is_id);
+
+			if (entry == NULL) {
+				/* add to the library */
+				rhythmdb_add_uri (db, uri);
+			} else {
+				/* add to list of entries to copy */
+				entries = g_list_prepend (entries, entry);
+			}
+
+			g_free (uri);
+		}
+	}
+
+	if (entries) {
+		entries = g_list_reverse (entries);
+		if (rb_source_can_paste (asource))
+			rb_source_paste (asource, entries);
+		g_list_free (entries);
+	}
+
+	g_list_free (list);
+	g_object_unref (db);
+	return TRUE;
+}
+
+static gboolean
+impl_can_paste (RBSource *asource)
+{
+	gboolean can_paste = TRUE;
+	char *str;
+
+	g_object_get (RB_LIBRARY_CHILD_SOURCE (asource), "uri", &str, NULL);
+	can_paste &= (str != NULL);
+	g_free (str);
+
+	str = eel_gconf_get_string (CONF_LIBRARY_LAYOUT_PATH);
+	can_paste &= (str != NULL);
+	g_free (str);
+
+	str = eel_gconf_get_string (CONF_LIBRARY_LAYOUT_FILENAME);
+	can_paste &= (str != NULL);
+	g_free (str);
+
+	str = eel_gconf_get_string (CONF_LIBRARY_PREFERRED_FORMAT);
+	can_paste &= (str != NULL);
+	g_free (str);
+	return can_paste;
+}
+
+static void
+completed_cb (RhythmDBEntry *entry, const char *dest, GError *error, RBLibraryChildSource *source)
+{
+	if (error != NULL) {
+		if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+			rb_debug ("not displaying 'file exists' error for %s", dest);
+		} else {
+			rb_error_dialog (NULL, _("Error transferring track"), "%s", error->message);
+		}
+		return;
+	}
+
+	RBShell *shell;
+	RhythmDB *db;
+
+	g_object_get (source, "shell", &shell, NULL);
+	g_object_get (shell, "db", &db, NULL);
+	g_object_unref (shell);
+
+	rhythmdb_add_uri (db, dest);
+
+	g_object_unref (db);
+}
+
+static void
+impl_paste (RBSource *asource, GList *entries)
+{
+	RBLibraryChildSource *source = RB_LIBRARY_CHILD_SOURCE (asource);
+	RBRemovableMediaManager *rm_mgr;
+	GList *l;
+	RBShell *shell;
+	RhythmDBEntryType source_entry_type;
+	char *uri;
+	RhythmDB *db;
+
+	if (impl_can_paste (asource) == FALSE) {
+		g_warning ("RBLibraryChildSource impl_paste called when gconf keys unset");
+		return;
+	}
+
+	g_object_get (source,
+		      "shell", &shell,
+		      "entry-type", &source_entry_type,
+		      "uri", &uri,
+		      NULL);
+	g_object_get (shell,
+			"removable-media-manager", &rm_mgr,
+			"db", &db,
+			NULL);
+	g_object_unref (shell);
+
+	for (l = entries; l != NULL; l = g_list_next (l)) {
+		RhythmDBEntry *entry = (RhythmDBEntry *)l->data;
+		RhythmDBEntryType entry_type;
+		RBSource *source_source;
+		const char *location;
+		char *dest;
+		char *sane_dest;
+
+		location = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
+
+		rb_debug ("pasting entry %s", location);
+
+		entry_type = rhythmdb_entry_get_entry_type (entry);
+		if (entry_type == source_entry_type && g_str_has_prefix (location, uri)) {
+			rb_debug ("can't copy an entry to itself");
+			continue;
+		}
+
+		/* see if the responsible source lets us copy */
+		source_source = rb_shell_get_source_by_entry_type (shell, entry_type);
+		if ((source_source != NULL) && !rb_source_can_copy (source_source)) {
+			rb_debug ("source for the entry doesn't want us to copy it");
+			continue;
+		}
+
+		dest = rb_library_build_filename (db, uri, entry);
+		if (dest == NULL) {
+			rb_debug ("could not create destination path for entry");
+			continue;
+		}
+
+		sane_dest = rb_sanitize_uri_for_filesystem (dest);
+		g_free (dest);
+
+		rb_removable_media_manager_queue_transfer (rm_mgr, entry,
+							  sane_dest, NULL,
+							  (RBTransferCompleteCallback)completed_cb, source);
+	}
+	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, source_entry_type);
+	g_free (uri);
+
+	g_object_unref (rm_mgr);
+	g_object_unref (db);
 }
 
 static gboolean
