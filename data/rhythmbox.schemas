@@ -45,6 +45,17 @@
         </locale>
       </schema>
       <schema>
+        <key>/schemas/apps/rhythmbox/default_library_location</key>
+        <applyto>/apps/rhythmbox/default_library_location</applyto>
+        <owner>rhythmbox</owner>
+        <type>string</type>
+        <default></default>
+        <locale name="C">
+        <short>Directory where Rhythmbox should put files</short>
+        <long>The URI of the directory where Rhythmbox puts files from e.g. ripped CDs or tracks transferred from portable media players</long>
+        </locale>
+      </schema>
+      <schema>
         <key>/schemas/apps/rhythmbox/library_locations</key>
         <applyto>/apps/rhythmbox/library_locations</applyto>
         <owner>rhythmbox</owner>
@@ -101,14 +112,15 @@
 	</locale>
       </schema>
       <schema>
-        <key>/schemas/apps/rhythmbox/monitor_library</key>
-        <applyto>/apps/rhythmbox/monitor_library</applyto>
+        <key>/schemas/apps/rhythmbox/monitor_library_locations</key>
+        <applyto>/apps/rhythmbox/monitor_library_locations</applyto>
         <owner>rhythmbox</owner>
-        <type>bool</type>
-        <default>FALSE</default>
+        <type>list</type>
+        <list_type>string</list_type>
+        <default>[]</default>
         <locale name="C">
-          <short>Whether the library location are monitored</short>
-          <long>If true, the locations listed in /apps/rhythmbox/library_locations are monitored for new files</long>
+          <short>Library locations which are monitored for new tracks</short>
+          <long>A list of directory URIs Rhythmbox monitors for new tracks. This is a subset of the list in library_locations.</long>
         </locale>
       </schema>
 

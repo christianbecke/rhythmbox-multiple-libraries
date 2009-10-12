@@ -28,6 +28,10 @@ libsources_la_SOURCES = 		\
 	rb-sourcelist.c			\
 	rb-sourcelist-model.c		\
 	rb-browser-source.c		\
+	rb-library-file-helpers.c	\
+	rb-library-file-helpers.h	\
+	rb-library-preferences.c	\
+	rb-library-preferences.h	\
 	rb-library-source.c		\
 	rb-library-source.h		\
 	rb-podcast-source.c		\
@@ -46,6 +50,8 @@ libsources_la_SOURCES = 		\
 	rb-import-errors-source.c	\
 	rb-import-errors-source.h	\
 	rb-source-search-basic.c	\
+	rb-library-child-source.c	\
+	rb-library-child-source.h	\
 	$(NULL)
 
 INCLUDES =						\

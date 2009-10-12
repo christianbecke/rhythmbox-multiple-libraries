@@ -62,8 +62,10 @@ G_BEGIN_DECLS
 #define CONF_DAAP_SHARE_PASSWORD   CONF_PREFIX "/sharing/share_password"
 #define CONF_DAAP_REQUIRE_PASSWORD CONF_PREFIX "/sharing/require_password"
 
-#define CONF_LIBRARY_LOCATION	CONF_PREFIX "/library_locations"
-#define CONF_MONITOR_LIBRARY	CONF_PREFIX "/monitor_library"
+#define CONF_LIBRARY_LOCATION		CONF_PREFIX "/library_locations"
+#define CONF_MONITOR_LIBRARY		CONF_PREFIX "/monitor_library" /* obsolete, only for backward compatibility */
+#define CONF_DEFAULT_LIBRARY_LOCATION	CONF_PREFIX "/default_library_location"
+#define CONF_MONITOR_LIBRARY_LOCATIONS	CONF_PREFIX "/monitor_library_locations"
 #define CONF_LIBRARY_STRIP_CHARS	CONF_PREFIX "/library_strip_chars"
 #define CONF_LIBRARY_LAYOUT_PATH	CONF_PREFIX "/library_layout_path"
 #define CONF_LIBRARY_LAYOUT_FILENAME	CONF_PREFIX "/library_layout_filename"

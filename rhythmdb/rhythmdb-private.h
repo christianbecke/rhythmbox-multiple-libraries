@@ -146,9 +146,8 @@ struct _RhythmDBPrivate
 	GVolumeMonitor *volume_monitor;
 	GHashTable *monitored_directories;
 	GHashTable *changed_files;
-	guint library_location_notify_id;
 	guint changed_files_id;
-	GSList *library_locations;
+	GSList *monitored_locations;
 	guint monitor_notify_id;
 	GMutex *monitor_mutex;
 

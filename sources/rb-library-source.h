@@ -33,6 +33,7 @@
 #include <shell/rb-shell.h>
 #include <sources/rb-browser-source.h>
 #include <rhythmdb/rhythmdb.h>
+#include "rb-library-child-source.h"
 
 G_BEGIN_DECLS
 
@@ -46,7 +47,7 @@ G_BEGIN_DECLS
 typedef struct _RBLibrarySource RBLibrarySource;
 typedef struct _RBLibrarySourceClass RBLibrarySourceClass;
 
-typedef struct RBLibrarySourcePrivate RBLibrarySourcePrivate;
+typedef struct _RBLibrarySourcePrivate RBLibrarySourcePrivate;
 
 struct _RBLibrarySource
 {
@@ -60,9 +61,42 @@ struct _RBLibrarySourceClass
 	RBBrowserSourceClass parent;
 };
 
+struct _RBLibrarySourcePrivate
+{
+	RhythmDB *db;
+
+	gboolean loading_prefs;
+	RBShellPreferences *shell_prefs;
+
+	GtkWidget *config_widget;
+
+	GList *child_sources;
+
+	GtkWidget *library_location_entry;
+	GtkWidget *layout_path_menu;
+	GtkWidget *layout_filename_menu;
+	GtkWidget *preferred_format_menu;
+	GtkWidget *layout_example_label;
+	GtkWidget *locations_tree;
+
+	GList *import_jobs;
+	guint start_import_job_id;
+
+	guint library_location_notify_id;
+	guint default_library_location_notify_id;
+	guint ui_dir_notify_id;
+	guint layout_path_notify_id;
+	guint layout_filename_notify_id;
+	guint monitor_library_locations_notify_id;
+};
+
 GType		rb_library_source_get_type		(void);
 
 RBSource *      rb_library_source_new			(RBShell *shell);
+
+RBLibraryChildSource * rb_library_source_get_child_source_for_uri (RBLibrarySource *source, const char *uri);
+
+void rb_library_source_sync_child_sources (RBLibrarySource *source);
 
 G_END_DECLS
 

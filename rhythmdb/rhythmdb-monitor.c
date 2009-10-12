@@ -159,8 +159,8 @@ monitor_entry_file (RhythmDBEntry *entry, RhythmDB *db)
 
 		loc = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
 
-		/* don't add add monitor if it's in the library path */
-		for (l = db->priv->library_locations; l != NULL; l = g_slist_next (l)) {
+		/* don't add a monitor if it's in the library path */
+		for (l = db->priv->monitored_locations; l != NULL; l = g_slist_next (l)) {
 			if (g_str_has_prefix (loc, (const char*)l->data))
 				return;
 				
@@ -264,8 +264,8 @@ rhythmdb_start_monitoring (RhythmDB *db)
 	g_thread_create ((GThreadFunc)_monitor_entry_thread, g_object_ref (db), FALSE, NULL);
 
 	/* monitor all library locations */
-	if (db->priv->library_locations)
-		g_slist_foreach (db->priv->library_locations, (GFunc) monitor_library_directory, db);
+	if (db->priv->monitored_locations)
+		g_slist_foreach (db->priv->monitored_locations, (GFunc) monitor_library_directory, db);
 }
 
 static void
@@ -300,23 +300,20 @@ rhythmdb_directory_change_cb (GFileMonitor *monitor,
         case G_FILE_MONITOR_EVENT_CREATED:
 		{
 			GSList *cur;
-			gboolean in_library = FALSE;
-
-			if (!eel_gconf_get_boolean (CONF_MONITOR_LIBRARY))
-				break;
+			gboolean in_monitored_location = FALSE;
 
 			if (rb_uri_is_hidden (canon_uri))
 				break;
 
-			/* ignore new files outside of the library locations */
-			for (cur = db->priv->library_locations; cur != NULL; cur = g_slist_next (cur)) {
+			/* ignore new files outside of a monitored location */
+			for (cur = db->priv->monitored_locations; cur != NULL; cur = g_slist_next (cur)) {
 				if (g_str_has_prefix (canon_uri, cur->data)) {
-					in_library = TRUE;
+					in_monitored_location = TRUE;
 					break;
 				}
 			}
 
-			if (!in_library)
+			if (!in_monitored_location)
 				break;
 		}
 
