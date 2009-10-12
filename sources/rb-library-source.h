@@ -98,6 +98,8 @@ RBLibraryChildSource * rb_library_source_get_child_source_for_uri (RBLibrarySour
 
 void rb_library_source_sync_child_sources (RBLibrarySource *source);
 
+void rb_library_source_move_files (RBLibrarySource *source, RBLibraryChildSource *dest_source, GList *entries);
+
 G_END_DECLS
 
 #endif /* __RB_LIBRARY_SOURCE_H */

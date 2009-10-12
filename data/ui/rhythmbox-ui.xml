@@ -41,6 +41,10 @@
       </menu>
       <separator/>
       <placeholder name="DeleteActionPlaceholder" />
+      <menu name="EditMoveFilesMenu" action="EditMoveFiles">
+        <placeholder name="EditMoveFilesPlaceholder"/>
+      </menu>
+      <separator/>
       <menuitem name="EditMovetoTrash" action="EditMovetoTrash"/>
       <separator/>
       <menuitem name="EditPluginsMenu" action="EditPlugins"/>
@@ -122,6 +126,11 @@
     <menuitem name="CopyLibraryPopup" action="EditCopy"/>
     <separator/>
     <placeholder name="DeleteActionPlaceholder" />
+    <menu name="BrowserSourcePopupMoveFiles" action="EditMoveFiles">
+      <placeholder name="BrowserSourcePopupMoveFilesPlaceholder"/>
+    </menu>
+    <separator/>
+    <menuitem name="DeleteLibraryPopup" action="EditDelete"/>
     <menuitem name="MovetoTrashPopup" action="EditMovetoTrash"/>
     <separator/>
     <menuitem name="BrowseGenreLibraryPopup" action="BrowserSrcChooseGenre"/>

@@ -71,6 +71,14 @@ static void rb_library_source_init (RBLibrarySource *source);
 static void rb_library_source_constructed (GObject *object);
 static void rb_library_source_dispose (GObject *object);
 static void rb_library_source_finalize (GObject *object);
+static void rb_library_source_set_property (GObject *object,
+		guint prop_id,
+		const GValue *value,
+		GParamSpec *pspec);
+static void rb_library_source_get_property (GObject *object,
+		guint prop_id,
+		GValue *value,
+		GParamSpec *pspec);
 
 /* RBSource implementations */
 static gboolean impl_show_popup (RBSource *source);
@@ -92,6 +100,12 @@ void rb_library_source_sync_child_sources (RBLibrarySource *source);
 #define RB_LIBRARY_SOURCE_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), RB_TYPE_LIBRARY_SOURCE, RBLibrarySourcePrivate))
 G_DEFINE_TYPE (RBLibrarySource, rb_library_source, RB_TYPE_BROWSER_SOURCE)
 
+enum
+{
+	PROP_0,
+	PROP_CHILD_SOURCES,
+};
+
 static void
 rb_library_source_class_init (RBLibrarySourceClass *klass)
 {
@@ -102,6 +116,8 @@ rb_library_source_class_init (RBLibrarySourceClass *klass)
 	object_class->dispose = rb_library_source_dispose;
 	object_class->finalize = rb_library_source_finalize;
 	object_class->constructed = rb_library_source_constructed;
+	object_class->set_property = rb_library_source_set_property;
+	object_class->get_property = rb_library_source_get_property;
 
 	source_class->impl_show_popup = impl_show_popup;
 	source_class->impl_get_config_widget = rb_library_prefs_get_config_widget;
@@ -116,6 +132,13 @@ rb_library_source_class_init (RBLibrarySourceClass *klass)
 
 	browser_source_class->impl_get_paned_key = impl_get_paned_key;
 	browser_source_class->impl_has_drop_support = (RBBrowserSourceFeatureFunc) rb_true_function;
+
+	g_object_class_install_property (object_class,
+			PROP_CHILD_SOURCES,
+			g_param_spec_pointer ("child-sources",
+				"child-sources",
+				"list of RBLibraryChildSource objects",
+				G_PARAM_READABLE));
 
 	g_type_class_add_private (klass, sizeof (RBLibrarySourcePrivate));
 
@@ -207,6 +230,45 @@ rb_library_source_finalize (GObject *object)
 	rb_debug ("finalizing library source");
 
 	G_OBJECT_CLASS (rb_library_source_parent_class)->finalize (object);
+}
+
+static void
+rb_library_source_set_property (GObject *object,
+		guint prop_id,
+		const GValue *value,
+		GParamSpec *pspec)
+{
+	RBLibrarySource *source = RB_LIBRARY_SOURCE (object);
+
+	switch (prop_id) {
+		case PROP_CHILD_SOURCES:
+			if (source->priv->child_sources != NULL) {
+				g_list_free (source->priv->child_sources);
+			}
+			source->priv->child_sources = g_list_copy ((GList *) g_value_get_pointer (value));
+			break;
+		default:
+			G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+			break;
+	}
+}
+
+static void
+rb_library_source_get_property (GObject *object,
+		guint prop_id,
+		GValue *value,
+		GParamSpec *pspec)
+{
+	RBLibrarySource *source = RB_LIBRARY_SOURCE (object);
+
+	switch (prop_id) {
+		case PROP_CHILD_SOURCES:
+			g_value_set_pointer (value, g_list_copy (source->priv->child_sources));
+			break;
+		default:
+			G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+			break;
+	}
 }
 
 static gboolean
@@ -492,7 +554,7 @@ impl_can_paste (RBSource *asource)
 }
 
 static void
-completed_cb (RhythmDBEntry *entry, const char *dest, guint64 dest_size, GError *error, RBLibrarySource *source)
+paste_completed_cb (RhythmDBEntry *entry, const char *dest, guint64 dest_size, GError *error, RBLibrarySource *source)
 {
 	if (error == NULL) {
 		rhythmdb_add_uri (source->priv->db, dest);
@@ -506,21 +568,57 @@ completed_cb (RhythmDBEntry *entry, const char *dest, guint64 dest_size, GError 
 }
 
 static void
-impl_paste (RBSource *asource, GList *entries)
+move_completed_cb (RhythmDBEntry *entry, const char *dest, GError *transfer_error, RBLibrarySource *source)
 {
-	RBLibrarySource *source = RB_LIBRARY_SOURCE (asource);
+	if (transfer_error != NULL) {
+		if (g_error_matches (transfer_error, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+			rb_debug ("not displaying 'file exists' error for %s", dest);
+		} else {
+			rb_error_dialog (NULL, _("Error moving track"), "%s", transfer_error->message);
+		}
+		return;
+	}
+
+	char *uri;
+	GFile *file;
+	GError *err = NULL;
+
+	uri = g_strdup (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION));
+	rhythmdb_entry_delete (source->priv->db, entry);
+	rhythmdb_add_uri (source->priv->db, dest);
+
+	file = g_file_new_for_uri (uri);
+	if (! g_file_delete (file, NULL, &err)) {
+		if (err != NULL) {
+			rb_debug ("Could not delete '%s': %s",
+					uri, err->message);
+			g_error_free (err);
+		} else {
+			rb_debug ("Could not delete '%s': unknown error", uri);
+		}
+	}
+	g_object_unref (file);
+	g_free (uri);
+}
+
+static void
+do_paste (RBLibrarySource *source,
+		const char *dest_dir,
+		GList *entries,
+		RBTransferCompleteCallback callback)
+{
 	RBRemovableMediaManager *rm_mgr;
 	GList *l;
 	RBShell *shell;
 	RhythmDBEntryType source_entry_type;
-	char *default_dest;
 
-	if (impl_can_paste (asource) == FALSE) {
+	g_assert (dest_dir != NULL);
+	g_assert (callback != NULL);
+
+	if (impl_can_paste (RB_SOURCE (source)) == FALSE) {
 		g_warning ("RBLibrarySource impl_paste called when gconf keys unset");
 		return;
 	}
-
-	default_dest = eel_gconf_get_string (CONF_DEFAULT_LIBRARY_LOCATION);
 
 	g_object_get (source,
 		      "shell", &shell,
@@ -542,7 +640,7 @@ impl_paste (RBSource *asource, GList *entries)
 		rb_debug ("pasting entry %s", location);
 
 		entry_type = rhythmdb_entry_get_entry_type (entry);
-		if (entry_type == source_entry_type && g_str_has_prefix (location, default_dest)) {
+		if (entry_type == source_entry_type && g_str_has_prefix (location, dest_dir)) {
 			rb_debug ("can't copy an entry from the library to itself");
 			continue;
 		}
@@ -554,7 +652,7 @@ impl_paste (RBSource *asource, GList *entries)
 			continue;
 		}
 
-		dest = rb_library_build_filename (source->priv->db, default_dest, entry);
+		dest = rb_library_build_filename (source->priv->db, dest_dir, entry);
 		if (dest == NULL) {
 			rb_debug ("could not create destination path for entry");
 			continue;
@@ -565,12 +663,39 @@ impl_paste (RBSource *asource, GList *entries)
 
 		rb_removable_media_manager_queue_transfer (rm_mgr, entry,
 							  sane_dest, NULL,
-							  (RBTransferCompleteCallback)completed_cb, source);
+							  callback, source);
 	}
 	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, source_entry_type);
-	g_free (default_dest);
 
 	g_object_unref (rm_mgr);
+}
+
+static void
+impl_paste (RBSource *asource, GList *entries)
+{
+	char *dest_dir;
+
+	dest_dir = eel_gconf_get_string (CONF_DEFAULT_LIBRARY_LOCATION);
+	do_paste (RB_LIBRARY_SOURCE (asource),
+			dest_dir,
+			entries,
+			(RBTransferCompleteCallback) paste_completed_cb);
+	g_free (dest_dir);
+}
+
+void
+rb_library_source_move_files (RBLibrarySource *source, RBLibraryChildSource *dest_source, GList *entries)
+{
+	char *dest;
+
+	g_assert (RB_IS_LIBRARY_SOURCE (source));
+	g_assert (RB_IS_LIBRARY_CHILD_SOURCE (dest_source));
+
+	g_object_get (dest_source, "uri", &dest, NULL);
+	g_assert (dest != NULL);
+
+	do_paste (source, dest, entries, (RBTransferCompleteCallback) move_completed_cb);
+	g_free (dest);
 }
 
 static guint

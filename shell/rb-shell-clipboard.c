@@ -56,6 +56,10 @@
 #include "rhythmdb.h"
 #include "rb-debug.h"
 #include "rb-stock-icons.h"
+#include "eel-gconf-extensions.h"
+#include "rb-preferences.h"
+#include "rb-library-source.h"
+#include "rb-library-child-source.h"
 
 static void rb_shell_clipboard_class_init (RBShellClipboardClass *klass);
 static void rb_shell_clipboard_init (RBShellClipboard *shell_clipboard);
@@ -110,6 +114,15 @@ static void rb_shell_clipboard_cmd_queue_song_info (GtkAction *action,
 static void rebuild_playlist_menu (RBShellClipboard *clipboard);
 static gboolean rebuild_playlist_menu_idle (RBShellClipboard *clipboard);
 
+static void rb_shell_clipboard_move_files_cb (GtkAction *action,
+		RBShellClipboard *clipboard);
+static void rb_shell_clipboard_library_location_changed (GConfClient *client,
+		guint cnxn_id,
+		GConfEntry *entry,
+		RBShellClipboard *clipboard);
+static void rebuild_move_files_menu (RBShellClipboard *clipboard);
+static gboolean rebuild_move_files_menu_idle (RBShellClipboard *clipboard);
+
 struct RBShellClipboardPrivate
 {
 	RhythmDB *db;
@@ -119,7 +132,7 @@ struct RBShellClipboardPrivate
 
 	GtkUIManager *ui_mgr;
 	GtkActionGroup *actiongroup;
-	guint playlist_menu_ui_id;
+	guint playlist_menu_ui_id, move_files_menu_ui_id;
 
 	guint delete_action_ui_id;
 	GtkAction *delete_action;
@@ -128,7 +141,9 @@ struct RBShellClipboardPrivate
 
 	GAsyncQueue *deleted_queue;
 
-	guint idle_sync_id, idle_playlist_id;
+	guint idle_sync_id, idle_playlist_id, idle_move_files_id;
+
+	guint library_location_notify_id;
 
 	GList *entries;
 };
@@ -184,6 +199,8 @@ static GtkActionEntry rb_shell_clipboard_actions [] =
 	  N_("Remove each selected item from the play queue"),
 	  G_CALLBACK (rb_shell_clipboard_cmd_queue_delete) },
 
+	{ "EditMoveFiles", NULL, N_("Move files to") },
+
 	{ "MusicProperties", GTK_STOCK_PROPERTIES, N_("Pr_operties"), "<Alt>Return",
 	  N_("Show information on each selected song"),
 	  G_CALLBACK (rb_shell_clipboard_cmd_song_info) },
@@ -204,6 +221,12 @@ static const char *playlist_menu_paths[] = {
 	"/PlaylistViewPopup/PlaylistPopupPlaylistAdd/PlaylistPopupPlaylistAddPlaceholder",
 };
 static guint num_playlist_menu_paths = G_N_ELEMENTS (playlist_menu_paths);
+
+static const char *move_files_menu_paths[] = {
+	"/MenuBar/EditMenu/EditMoveFilesMenu/EditMoveFilesPlaceholder",
+	"/BrowserSourceViewPopup/BrowserSourcePopupMoveFiles/BrowserSourcePopupMoveFilesPlaceholder",
+};
+static guint num_move_files_menu_paths = G_N_ELEMENTS (move_files_menu_paths);
 
 G_DEFINE_TYPE (RBShellClipboard, rb_shell_clipboard, G_TYPE_OBJECT)
 
@@ -319,6 +342,15 @@ rb_shell_clipboard_dispose (GObject *object)
 		shell_clipboard->priv->idle_playlist_id = 0;
 	}
 
+	if (shell_clipboard->priv->idle_move_files_id != 0) {
+		g_source_remove (shell_clipboard->priv->idle_move_files_id);
+		shell_clipboard->priv->idle_move_files_id = 0;
+	}
+	if (shell_clipboard->priv->library_location_notify_id != 0) {
+		eel_gconf_notification_remove (shell_clipboard->priv->library_location_notify_id);
+		shell_clipboard->priv->library_location_notify_id = 0;
+	}
+
 	G_OBJECT_CLASS (rb_shell_clipboard_parent_class)->dispose (object);
 }
 
@@ -348,6 +380,12 @@ static void
 rb_shell_clipboard_set_source_internal (RBShellClipboard *clipboard,
 					RBSource *source)
 {
+	if (clipboard->priv->library_location_notify_id == 0)
+		clipboard->priv->library_location_notify_id =
+			eel_gconf_notification_add (CONF_LIBRARY_LOCATION,
+					(GConfClientNotifyFunc) rb_shell_clipboard_library_location_changed,
+					clipboard);
+
 	unset_source_internal (clipboard);
 
 	clipboard->priv->source = source;
@@ -402,6 +440,7 @@ rb_shell_clipboard_set_source_internal (RBShellClipboard *clipboard,
 	}
 
 	rebuild_playlist_menu (clipboard);
+	rebuild_move_files_menu (clipboard);
 }
 
 static void
@@ -579,6 +618,7 @@ rb_shell_clipboard_sync (RBShellClipboard *clipboard)
 	gboolean can_move_to_trash = FALSE;
 	gboolean can_select_all = FALSE;
 	gboolean can_show_properties = FALSE;
+	gboolean can_move_files = FALSE;
 	GtkAction *action;
 	RhythmDBEntryType entry_type;
 
@@ -608,6 +648,7 @@ rb_shell_clipboard_sync (RBShellClipboard *clipboard)
 		can_copy = rb_source_can_copy (clipboard->priv->source);
 		can_move_to_trash = rb_source_can_move_to_trash (clipboard->priv->source);
 		can_show_properties = rb_source_can_show_properties (clipboard->priv->source);
+		can_move_files = RB_IS_LIBRARY_CHILD_SOURCE (clipboard->priv->source);
 
 		if (clipboard->priv->queue_source)
 			can_add_to_queue = rb_source_can_add_to_queue (clipboard->priv->source);
@@ -663,6 +704,9 @@ rb_shell_clipboard_sync (RBShellClipboard *clipboard)
 	} else {
 		gtk_action_set_sensitive (action, FALSE);
 	}
+
+	action = gtk_action_group_get_action (clipboard->priv->actiongroup, "EditMoveFiles");
+	g_object_set (G_OBJECT (action), "sensitive", can_move_files, NULL);
 }
 
 static GtkWidget*
@@ -880,7 +924,7 @@ rb_shell_clipboard_playlist_add_cb (GtkAction *action,
 }
 
 static char *
-generate_action_name (RBStaticPlaylistSource *source,
+generate_playlist_action_name (RBStaticPlaylistSource *source,
 		      RBShellClipboard *clipboard)
 {
 	return g_strdup_printf ("AddToPlaylistClipboardAction%p", source);
@@ -897,7 +941,7 @@ rb_shell_clipboard_playlist_deleted_cb (RBStaticPlaylistSource *source,
 	rebuild_playlist_menu (clipboard);
 
 	/* then remove the 'add to playlist' action for the deleted playlist */
-	action_name = generate_action_name (source, clipboard);
+	action_name = generate_playlist_action_name (source, clipboard);
 	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
 	g_assert (action);
 	gtk_action_group_remove_action (clipboard->priv->actiongroup, action);
@@ -914,7 +958,7 @@ rb_shell_clipboard_playlist_renamed_cb (RBStaticPlaylistSource *source,
 
 	g_object_get (source, "name", &name, NULL);
 
-	action_name = generate_action_name (source, clipboard);
+	action_name = generate_playlist_action_name (source, clipboard);
 	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
 	g_assert (action);
 	g_free (action_name);
@@ -934,7 +978,7 @@ rb_shell_clipboard_playlist_visible_cb (RBStaticPlaylistSource *source,
 
 	g_object_get (source, "visibility", &visible, NULL);
 
-	action_name = generate_action_name (source, clipboard);
+	action_name = generate_playlist_action_name (source, clipboard);
 	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
 	g_assert (action);
 	g_free (action_name);
@@ -981,7 +1025,7 @@ add_playlist_to_menu (GtkTreeModel *model,
 		return FALSE;
 	}
 
-	action_name = generate_action_name (RB_STATIC_PLAYLIST_SOURCE (source), clipboard);
+	action_name = generate_playlist_action_name (RB_STATIC_PLAYLIST_SOURCE (source), clipboard);
 	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
 	if (action == NULL) {
 		char *name;
@@ -1077,5 +1121,167 @@ rb_shell_clipboard_playlist_added_cb (RBPlaylistManager *mgr,
 	if (clipboard->priv->idle_playlist_id == 0) {
 		clipboard->priv->idle_playlist_id =
 			g_idle_add ((GSourceFunc)rebuild_playlist_menu_idle, clipboard);
+	}
+}
+
+static void
+rb_shell_clipboard_move_files_cb (GtkAction *action, RBShellClipboard *clipboard)
+{
+	RBShell *shell;
+	RBLibrarySource *library_source;
+	RBLibraryChildSource *dest;
+	GList *entries;
+
+	rb_debug ("moving files");
+	dest = g_object_get_data (G_OBJECT (action), "move-files-dest");
+
+	entries = rb_source_copy (clipboard->priv->source);
+
+	g_object_get (clipboard->priv->source, "shell", &shell, NULL);
+
+	if (shell) {
+		g_object_get (shell, "library-source", &library_source, NULL);
+		g_object_unref (shell);
+	}
+
+	if (library_source) {
+		rb_library_source_move_files (library_source, dest, entries);
+		g_object_unref (library_source);
+	}
+
+	g_list_foreach (entries, (GFunc)rhythmdb_entry_unref, NULL);
+	g_list_free (entries);
+}
+
+static char *
+generate_move_files_action_name (RBSource *source,
+		      RBShellClipboard *clipboard)
+{
+	return g_strdup_printf ("MoveFilesClipboardAction%p", source);
+}
+
+static void
+rb_shell_clipboard_source_deleted_cb (RBSource *source,
+					RBShellClipboard *clipboard)
+{
+	char *action_name, *name;
+	GtkAction *action;
+
+	/* first rebuild the menu */
+	rebuild_move_files_menu (clipboard);
+
+	/* then remove the 'move files' action for the deleted source */
+	action_name = generate_move_files_action_name (source, clipboard);
+	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
+	g_assert (action);
+	g_object_get (action, "label", &name, NULL);
+	rb_debug ("source [%p] deleted, removing move-files menu action '%s'", source, name);
+	g_free (name);
+	gtk_action_group_remove_action (clipboard->priv->actiongroup, action);
+	g_free (action_name);
+	g_object_unref (action);
+}
+
+static void
+add_source_to_move_files_menu (RBLibraryChildSource *source,
+		      RBShellClipboard *clipboard)
+{
+	char *action_name;
+	GtkAction *action;
+	int i;
+
+	if (source == NULL) {
+		return;
+	}
+
+	if (RB_SOURCE (source) == clipboard->priv->source) {
+		return;
+	}
+
+	action_name = generate_move_files_action_name (RB_SOURCE (source), clipboard);
+	action = gtk_action_group_get_action (clipboard->priv->actiongroup, action_name);
+	if (action == NULL) {
+		char *name;
+
+		g_object_get (source, "name", &name, NULL);
+		rb_debug ("adding source [%p] to move-files menu: '%s'", source, name);
+		action = gtk_action_new (action_name, name, NULL, NULL);
+		gtk_action_group_add_action (clipboard->priv->actiongroup, action);
+		g_free (name);
+
+		g_object_set_data (G_OBJECT (action), "move-files-dest", source);
+
+		g_signal_connect_object (G_OBJECT (action),
+					 "activate", G_CALLBACK (rb_shell_clipboard_move_files_cb),
+					 clipboard, 0);
+
+		g_signal_connect_object (source,
+					 "deleted", G_CALLBACK (rb_shell_clipboard_source_deleted_cb),
+					 clipboard, 0);
+	}
+
+	for (i = 0; i < num_move_files_menu_paths; i++) {
+		gtk_ui_manager_add_ui (clipboard->priv->ui_mgr, clipboard->priv->move_files_menu_ui_id,
+				       move_files_menu_paths[i],
+				       action_name, action_name,
+				       GTK_UI_MANAGER_AUTO, FALSE);
+	}
+
+	g_free (action_name);
+}
+
+static void
+rebuild_move_files_menu (RBShellClipboard *clipboard)
+{
+	RBShell *shell;
+	RBLibrarySource *library_source;
+	GList *child_sources;
+
+	if (clipboard->priv->source == NULL)
+		return;
+
+	rb_debug ("rebuilding move-files menu");
+
+	if (clipboard->priv->move_files_menu_ui_id != 0) {
+		gtk_ui_manager_remove_ui (clipboard->priv->ui_mgr,
+					  clipboard->priv->move_files_menu_ui_id);
+	} else {
+		clipboard->priv->move_files_menu_ui_id =
+			gtk_ui_manager_new_merge_id (clipboard->priv->ui_mgr);
+	}
+
+	g_object_get (clipboard->priv->source, "shell", &shell, NULL);
+	if (shell != NULL) {
+		g_object_get (shell, "library-source", &library_source, NULL);
+		g_object_unref (shell);
+	}
+
+	if (library_source != NULL) {
+		g_object_get (library_source, "child-sources", &child_sources, NULL);
+		g_list_foreach (child_sources, (GFunc)add_source_to_move_files_menu, clipboard);
+		g_list_free (child_sources);
+		g_object_unref (library_source);
+	}
+}
+
+static gboolean
+rebuild_move_files_menu_idle (RBShellClipboard *clipboard)
+{
+	GDK_THREADS_ENTER ();
+	rebuild_move_files_menu (clipboard);
+	clipboard->priv->idle_move_files_id = 0;
+	GDK_THREADS_LEAVE ();
+	return FALSE;
+}
+
+static void
+rb_shell_clipboard_library_location_changed (GConfClient *client,
+		guint cnxn_id,
+		GConfEntry *entry,
+		RBShellClipboard *clipboard)
+{
+	if (clipboard->priv->idle_move_files_id == 0) {
+		clipboard->priv->idle_move_files_id =
+			g_idle_add ((GSourceFunc)rebuild_move_files_menu_idle, clipboard);
 	}
 }
